@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "core_cm4.h" // полный доступ к регистрам
+#include "core_cm4.h"   // доступ к DWT для точных задержек
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,8 +51,19 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
 /* USER CODE BEGIN PFP */
-void delay_us(uint32_t us); //функция задержки
-void AM_UART_Transmit(uint8_t byte); // функция основная
+/*!
+ * \brief Точная задержка в микросекундах через аппаратный счётчик DWT
+ * \param us Количество микросекунд
+ */
+void delayUs(uint32_t us);
+
+/*!
+ * \brief Передача одного байта амплитудно-модулированным UART
+ * \details При бите 0 — меандр 1 МГц на PA8, при бите 1 — высокий уровень
+ *          Параллельно на PA9 выдаётся обычный UART-сигнал
+ * \param byte Байт для передачи
+ */
+void transmitAmUart(uint8_t byte);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -91,8 +102,8 @@ int main(void)
   MX_GPIO_Init();
   MX_TIM1_Init();
   /* USER CODE BEGIN 2 */
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // PA8 — модулированный
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // PA9 — обычный UART
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // PA8 — модулированный сигнал
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // PA9 — обычный UART-сигнал
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -101,21 +112,21 @@ int main(void)
   {
     /* USER CODE END WHILE */
 
-    /* USER CODE BEGIN 3 */
-	    // Включаем аппаратный счётчик тактов для точной задержки (DWT)
-	    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-	    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	  /* USER CODE BEGIN 3 */
+	      // Включаем аппаратный счётчик тактов для точной задержки (DWT)
+	      CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	      DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-	    while (1)
-	    {
-	        for (uint8_t data = 0; data <= 0xFF; data++)
-	        {
-	            AM_UART_Transmit(data);
-	            HAL_Delay(1000);   // пауза 1 секунда между байтами
-	        }
-	    }
+	      while (1)
+	      {
+	          for (uint8_t data = 0; data <= 0xFF; data++)
+	          {
+	              transmitAmUart(data);
+	              HAL_Delay(1000);   // пауза 1 секунда между байтами
+	          }
+	      }
+	  /* USER CODE END 3 */
   }
-  /* USER CODE END 3 */
 }
 
 /**
@@ -135,9 +146,15 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 100;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -147,12 +164,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSE;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -271,42 +288,52 @@ static void MX_GPIO_Init(void)
 
 /* USER CODE BEGIN 4 */
 // ====================== ТОЧНАЯ ЗАДЕРЖКА ======================
-void delay_us(uint32_t us)
+/*!
+ * \brief Точная задержка в микросекундах через аппаратный счётчик DWT
+ * \param us Количество микросекунд
+ */
+void delayUs(uint32_t us)
 {
     uint32_t start = DWT->CYCCNT;
     uint32_t ticks = us * (SystemCoreClock / 1000000UL);
     while ((DWT->CYCCNT - start) < ticks);
 }
 
-// ====================== РАЗДЕАЛЬНАЯ ПЕРЕДАЧА ЧЕРЕЗ ДВА КАНАЛА TIM1 ======================
-void AM_UART_Transmit(uint8_t byte)
+// ====================== ПЕРЕДАЧА АМПЛИТУДНО-МОДУЛИРОВАННОГО UART ======================
+/*!
+ * \brief Передача одного байта амплитудно-модулированным UART
+ * \details При бите 0 — меандр 1 МГц на PA8, при бите 1 — высокий уровень
+ *          Параллельно на PA9 выдаётся обычный UART-сигнал
+ * \param byte Байт для передачи
+ */
+void transmitAmUart(uint8_t byte)
 {
-    // === СТАРТ-Б�?Т (0) ===
-    htim1.Instance->CCR1 = 50;   // PA8: меандр 1 МГц, скважность 50
-    htim1.Instance->CCR2 = 0;    // PA9: низкий уровень, скважность 0
-    delay_us(417);
+    // === СТАРТ-БИТ (0) ===
+    htim1.Instance->CCR1 = 50;   // PA8: меандр 1 МГц (скважность 50%)
+    htim1.Instance->CCR2 = 0;    // PA9: низкий уровень
+    delayUs(417);
 
-    // === 8 Б�?Т ДАННЫХ ===
-    for (int i = 0; i < 8; i++)	 // каждый бит перебираем
+    // === 8 БИТ ДАННЫХ ===
+    for (int i = 0; i < 8; i++)
     {
-        if (byte & 1)   // крайний правый бит = 1
+        if (byte & 1)   // бит == 1
         {
-            htim1.Instance->CCR1 = 100;   // PA8: высокий уровень, скважность 100
-            htim1.Instance->CCR2 = 100;   // PA9: высокий уровень, скважность 100
+            htim1.Instance->CCR1 = 100;   // PA8: высокий уровень (скважность 100%)
+            htim1.Instance->CCR2 = 100;   // PA9: высокий уровень
         }
-        else            // крайний бит = 0
+        else            // бит == 0
         {
-            htim1.Instance->CCR1 = 50;    // PA8: меандр, скважность 50
-            htim1.Instance->CCR2 = 0;     // PA9: низкий уровень, скважность 0
+            htim1.Instance->CCR1 = 50;    // PA8: меандр
+            htim1.Instance->CCR2 = 0;     // PA9: низкий уровень
         }
-        byte >>= 1; // сдвигаем все вправо, появляется новый бит для вывода
-        delay_us(417); // задержка (битрейд 2400)
+        byte >>= 1;
+        delayUs(417);
     }
 
     // === СТОП-БИТ (1) ===
     htim1.Instance->CCR1 = 100;
     htim1.Instance->CCR2 = 100;
-    delay_us(417);
+    delayUs(417);
 }
 /* USER CODE END 4 */
 

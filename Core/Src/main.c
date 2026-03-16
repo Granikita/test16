@@ -22,6 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "core_cm4.h"   // доступ к DWT для точных задержек
+#include <stdbool.h>    // для bool, true, false
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,15 +42,20 @@
 
 /* Private variables ---------------------------------------------------------*/
 TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
-
+uint8_t currentByte = 0;     // Текущий байт для передачи (0x00..0xFF)
+uint8_t bitIndex = 0;        // Индекс бита (0: старт, 1-8: данные, 9: стоп)
+bool isTransmitting = false; // Флаг: идёт ли передача байта
+uint32_t secondCounter = 0;  // Счётчик для паузы 1 секунда (используем SysTick)
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 /*!
  * \brief Точная задержка в микросекундах через аппаратный счётчик DWT
@@ -64,6 +70,11 @@ void delayUs(uint32_t us);
  * \param byte Байт для передачи
  */
 void transmitAmUart(uint8_t byte);
+
+/*!
+ * \brief Обработчик прерывания от TIM2 (передача бита каждые 417 мкс)
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -101,9 +112,12 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM1_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // PA8 — модулированный сигнал
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // PA9 — обычный UART-сигнал
+
+  HAL_TIM_Base_Start_IT(&htim2);  // Запуск TIM2 с прерываниями
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -113,20 +127,35 @@ int main(void)
     /* USER CODE END WHILE */
 
 	  /* USER CODE BEGIN 3 */
-	      // Включаем аппаратный счётчик тактов для точной задержки (DWT)
-	      CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-	      DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+	    // Включаем DWT для задержек (если нужно где-то ещё)
+	    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+	    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-	      while (1)
-	      {
-	          for (uint8_t data = 0; data <= 0xFF; data++)
-	          {
-	              transmitAmUart(data);
-	              HAL_Delay(1000);   // пауза 1 секунда между байтами
-	          }
-	      }
-	  /* USER CODE END 3 */
+	    // Запускаем первую передачу
+	    isTransmitting = true;
+	    bitIndex = 0;
+	    currentByte = 0;
+
+	    while (1)
+	    {
+	        // Здесь можно добавить другую программу, например мигание LED
+	        // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+	        // HAL_Delay(500);  // Пример: мигает LED каждые 0.5 с, не мешая UART
+
+	        // Пауза 1 секунда через SysTick (не блокирует)
+	        if (secondCounter >= 1000)  // SysTick = 1 мс
+	        {
+	            secondCounter = 0;
+	            if (!isTransmitting)
+	            {
+	                currentByte = (currentByte + 1) % 0x100;  // Следующий байт 0x00..0xFF
+	                isTransmitting = true;
+	                bitIndex = 0;
+	            }
+	        }
+	    }
   }
+	  /* USER CODE END 3 */
 }
 
 /**
@@ -257,6 +286,51 @@ static void MX_TIM1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 41699;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -287,19 +361,17 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-// ====================== ТОЧНАЯ ЗАДЕРЖКА ======================
 /*!
  * \brief Точная задержка в микросекундах через аппаратный счётчик DWT
  * \param us Количество микросекунд
  */
 void delayUs(uint32_t us)
 {
-    uint32_t start = DWT->CYCCNT;
-    uint32_t ticks = us * (SystemCoreClock / 1000000UL);
-    while ((DWT->CYCCNT - start) < ticks);
+  uint32_t start = DWT->CYCCNT;
+  uint32_t ticks = us * (SystemCoreClock / 1000000UL);
+  while ((DWT->CYCCNT - start) < ticks);
 }
 
-// ====================== ПЕРЕДАЧА АМПЛИТУДНО-МОДУЛИРОВАННОГО UART ======================
 /*!
  * \brief Передача одного байта амплитудно-модулированным UART
  * \details При бите 0 — меандр 1 МГц на PA8, при бите 1 — высокий уровень
@@ -308,32 +380,37 @@ void delayUs(uint32_t us)
  */
 void transmitAmUart(uint8_t byte)
 {
-    // === СТАРТ-БИТ (0) ===
-    htim1.Instance->CCR1 = 50;   // PA8: меандр 1 МГц (скважность 50%)
-    htim1.Instance->CCR2 = 0;    // PA9: низкий уровень
-    delayUs(417);
+  // Функция не нужна теперь — всё в прерывании. Оставь как заглушку или удали
+}
 
-    // === 8 БИТ ДАННЫХ ===
-    for (int i = 0; i < 8; i++)
+/*!
+ * \brief Обработчик прерывания от TIM2 (передача бита каждые 417 мкс)
+ */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM2 && isTransmitting)
+  {
+    uint8_t bit = (bitIndex == 0) ? 0 :         // Старт-бит = 0
+                  (bitIndex == 9) ? 1 :        // Стоп-бит = 1
+                  (currentByte >> (bitIndex - 1)) & 1;  // Данные биты
+
+    if (bit == 1)
     {
-        if (byte & 1)   // бит == 1
-        {
-            htim1.Instance->CCR1 = 100;   // PA8: высокий уровень (скважность 100%)
-            htim1.Instance->CCR2 = 100;   // PA9: высокий уровень
-        }
-        else            // бит == 0
-        {
-            htim1.Instance->CCR1 = 50;    // PA8: меандр
-            htim1.Instance->CCR2 = 0;     // PA9: низкий уровень
-        }
-        byte >>= 1;
-        delayUs(417);
+      htim1.Instance->CCR1 = 100;   // PA8: высокий уровень
+      htim1.Instance->CCR2 = 100;   // PA9: высокий уровень
+    }
+    else
+    {
+      htim1.Instance->CCR1 = 50;    // PA8: меандр
+      htim1.Instance->CCR2 = 0;     // PA9: низкий уровень
     }
 
-    // === СТОП-БИТ (1) ===
-    htim1.Instance->CCR1 = 100;
-    htim1.Instance->CCR2 = 100;
-    delayUs(417);
+    bitIndex++;
+    if (bitIndex > 9)
+    {
+      isTransmitting = false;  // Байт передан
+    }
+  }
 }
 /* USER CODE END 4 */
 

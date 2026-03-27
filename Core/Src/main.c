@@ -21,8 +21,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "core_cm4.h"   // доступ к DWT для точных задержек
-#include <stdbool.h>    // для bool, true, false
+#include "core_cm4.h"     // доступ к DWT
+#include "am_uart.h"      // ← наш UART на прерываниях
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,10 +45,7 @@ TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
-uint8_t currentByte = 0;     // Текущий байт для передачи (0x00..0xFF)
-uint8_t bitIndex = 0;        // Индекс бита (0: старт, 1-8: данные, 9: стоп)
-bool isTransmitting = false; // Флаг: идёт ли передача байта
-uint32_t secondCounter = 0;  // Счётчик для паузы 1 секунда (используем SysTick)
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -57,24 +54,7 @@ static void MX_GPIO_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
-/*!
- * \brief Точная задержка в микросекундах через аппаратный счётчик DWT
- * \param us Количество микросекунд
- */
-void delayUs(uint32_t us);
 
-/*!
- * \brief Передача одного байта амплитудно-модулированным UART
- * \details При бите 0 — меандр 1 МГц на PA8, при бите 1 — высокий уровень
- *          Параллельно на PA9 выдаётся обычный UART-сигнал
- * \param byte Байт для передачи
- */
-void transmitAmUart(uint8_t byte);
-
-/*!
- * \brief Обработчик прерывания от TIM2 (передача бита каждые 417 мкс)
- */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -117,7 +97,7 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // PA8 — модулированный сигнал
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // PA9 — обычный UART-сигнал
 
-  HAL_TIM_Base_Start_IT(&htim2);  // Запуск TIM2 с прерываниями
+  HAL_TIM_Base_Start_IT(&htim2);             // Запускаем таймер прерываний для передачи битов
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -126,36 +106,20 @@ int main(void)
   {
     /* USER CODE END WHILE */
 
-	  /* USER CODE BEGIN 3 */
-	    // Включаем DWT для задержек (если нужно где-то ещё)
-	    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-	    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+    /* USER CODE BEGIN 3 */
+        // Включаем DWT (нужно для delayUs, если где-то ещё используешь)
+        CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+        DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-	    // Запускаем первую передачу
-	    isTransmitting = true;
-	    bitIndex = 0;
-	    currentByte = 0;
+        // Запускаем первую передачу байта 0x00
+        transmitAmUart(0);
 
-	    while (1)
-	    {
-	        // Здесь можно добавить другую программу, например мигание LED
-	        // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-	        // HAL_Delay(500);  // Пример: мигает LED каждые 0.5 с, не мешая UART
+        // Здесь можно писать любую другую программу
+        // (мигание LED, чтение кнопок, вывод на дисплей и т.д.)
+        // Передача UART идёт в фоне через прерывание TIM2
 
-	        // Пауза 1 секунда через SysTick (не блокирует)
-	        if (secondCounter >= 1000)  // SysTick = 1 мс
-	        {
-	            secondCounter = 0;
-	            if (!isTransmitting)
-	            {
-	                currentByte = (currentByte + 1) % 0x100;  // Следующий байт 0x00..0xFF
-	                isTransmitting = true;
-	                bitIndex = 0;
-	            }
-	        }
-	    }
-  }
-	  /* USER CODE END 3 */
+    /* USER CODE END 3 */
+  } // вот эту скобку я добавляю каждый раз
 }
 
 /**
@@ -361,57 +325,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-/*!
- * \brief Точная задержка в микросекундах через аппаратный счётчик DWT
- * \param us Количество микросекунд
- */
-void delayUs(uint32_t us)
-{
-  uint32_t start = DWT->CYCCNT;
-  uint32_t ticks = us * (SystemCoreClock / 1000000UL);
-  while ((DWT->CYCCNT - start) < ticks);
-}
 
-/*!
- * \brief Передача одного байта амплитудно-модулированным UART
- * \details При бите 0 — меандр 1 МГц на PA8, при бите 1 — высокий уровень
- *          Параллельно на PA9 выдаётся обычный UART-сигнал
- * \param byte Байт для передачи
- */
-void transmitAmUart(uint8_t byte)
-{
-  // Функция не нужна теперь — всё в прерывании. Оставь как заглушку или удали
-}
-
-/*!
- * \brief Обработчик прерывания от TIM2 (передача бита каждые 417 мкс)
- */
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim->Instance == TIM2 && isTransmitting)
-  {
-    uint8_t bit = (bitIndex == 0) ? 0 :         // Старт-бит = 0
-                  (bitIndex == 9) ? 1 :        // Стоп-бит = 1
-                  (currentByte >> (bitIndex - 1)) & 1;  // Данные биты
-
-    if (bit == 1)
-    {
-      htim1.Instance->CCR1 = 100;   // PA8: высокий уровень
-      htim1.Instance->CCR2 = 100;   // PA9: высокий уровень
-    }
-    else
-    {
-      htim1.Instance->CCR1 = 50;    // PA8: меандр
-      htim1.Instance->CCR2 = 0;     // PA9: низкий уровень
-    }
-
-    bitIndex++;
-    if (bitIndex > 9)
-    {
-      isTransmitting = false;  // Байт передан
-    }
-  }
-}
 /* USER CODE END 4 */
 
 /**

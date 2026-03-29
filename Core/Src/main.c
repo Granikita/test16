@@ -107,19 +107,17 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-        // Включаем DWT (нужно для delayUs, если где-то ещё используешь)
+        // Включаем DWT
         CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
         DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
         // Запускаем первую передачу байта 0x00
         transmitAmUart(0);
 
-        // Здесь можно писать любую другую программу
-        // (мигание LED, чтение кнопок, вывод на дисплей и т.д.)
-        // Передача UART идёт в фоне через прерывание TIM2
+        // Здесь любая прога
 
     /* USER CODE END 3 */
-  } // вот эту скобку я добавляю каждый раз
+  }
 }
 
 /**
